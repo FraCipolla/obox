@@ -6,8 +6,11 @@ import "core:unicode/utf8"
 
 Panel :: enum {
 	Editor,
-	CommandPopup,
+	Command,
 	Explorer,
+    Find,
+    Git,
+    Terminal,
 }
 
 PopupBox :: struct {
@@ -17,19 +20,19 @@ PopupBox :: struct {
 
 Editor :: struct {
     keymap:         Keymap,
-	cols:           i32,
-	rows:           i32,
+	cols:           int,
+	rows:           int,
 	row_offset:     int,
 	lines:          [dynamic][dynamic]u8,
 	cursor:         [dynamic]Cursor,
 
-	explorer_width: i32,
+	explorer_width: int,
 	show_explorer:  bool,
 	filepath:       string,
 	status_msg:     string,
 
 	active_panel:   Panel,
-	cmd_box:        PopupBox,
+	popup_box:        PopupBox,
 
 	explorer:       Explorer,
 }
@@ -48,7 +51,7 @@ init_editor :: proc() {
 	cursor: Cursor = Cursor{}
 	cursor.head = Position{x = 0, y = 0}
 	append(&editor.cursor, cursor)
-	editor.cmd_box.buff = make([dynamic]u8)
+	editor.popup_box.buff = make([dynamic]u8)
 	editor.explorer_width = 24
 	editor.show_explorer = true
 }
@@ -58,23 +61,12 @@ destroy_editor :: proc() {
 		delete(line)
 	}
 	delete(editor.lines)
-	delete(editor.cmd_box.buff)
+	delete(editor.popup_box.buff)
     delete(editor.keymap.bindings)
 }
 
-// clamp_cursor :: proc() {
-// 	if len(editor.lines) == 0 {
-// 		editor.cursor[0].head.x = 0
-// 		editor.cursor[0].head.y = 0
-// 		return
-// 	}
-// 	editor.cursor[0].head.y = clamp(editor.cursor[0].head.y, 0, len(editor.lines) - 1)
-// 	line_len := len(editor.lines[editor.cursor[0].head.y])
-// 	editor.cursor[0].head.x = clamp(editor.cursor[0].head.x, 0, line_len)
-// }
-
-clamp_cmd_cursor :: proc() {
-	editor.cmd_box.cursor.head.x = clamp(editor.cmd_box.cursor.head.x, 0, len(editor.cmd_box.buff))
+clamp_popup_cursor :: proc() {
+	editor.popup_box.cursor.head.x = clamp(editor.popup_box.cursor.head.x, 0, len(editor.popup_box.buff))
 }
 
 editor_open_file :: proc(filename: string) -> bool {
@@ -105,28 +97,136 @@ editor_open_file :: proc(filename: string) -> bool {
 	return true
 }
 
+import "core:slice"
+
+delete_selection :: proc() {
+    if len(editor.cursor) == 0 do return
+
+    cursor_indices := make([dynamic]int, 0, len(editor.cursor))
+    defer delete(cursor_indices)
+
+    for i in 0 ..< len(editor.cursor) {
+        append(&cursor_indices, i)
+    }
+
+    slice.sort_by(cursor_indices[:], proc(i, j: int) -> bool {
+        c1, c2 := editor.cursor[i], editor.cursor[j]
+        start1 := c1.anchor.y < c1.head.y ? c1.anchor : c1.head
+        start2 := c2.anchor.y < c2.head.y ? c2.anchor : c2.head
+        
+        if start1.y != start2.y do return start1.y > start2.y
+        return start1.x > start2.x
+    })
+
+    for idx in cursor_indices {
+        c := &editor.cursor[idx]
+        if c.anchor == c.head do continue
+
+        start_vis, end_vis: Position
+        if c.anchor.y < c.head.y || (c.anchor.y == c.head.y && c.anchor.x <= c.head.x) {
+            start_vis, end_vis = c.anchor, c.head
+        } else {
+            start_vis, end_vis = c.head, c.anchor
+        }
+
+        if start_vis.y == end_vis.y {
+            line := &editor.lines[start_vis.y]
+            
+            start_byte := visual_x_to_byte_idx(line[:], start_vis.x)
+            end_byte   := visual_x_to_byte_idx(line[:], end_vis.x)
+            
+            start_byte = clamp(start_byte, 0, len(line))
+            end_byte   = clamp(end_byte, start_byte, len(line))
+
+            delete_bytes := end_byte - start_byte
+            if delete_bytes > 0 {
+                copy(line[start_byte:], line[end_byte:])
+                resize(line, len(line) - delete_bytes)
+            }
+
+        } else {
+            start_line := &editor.lines[start_vis.y]
+            end_line   := &editor.lines[end_vis.y]
+
+            start_byte := visual_x_to_byte_idx(start_line[:], start_vis.x)
+            end_byte   := visual_x_to_byte_idx(end_line[:], end_vis.x)
+
+            start_byte = clamp(start_byte, 0, len(start_line))
+            end_byte   = clamp(end_byte, 0, len(end_line))
+
+            resize(start_line, start_byte)
+
+            if end_byte < len(end_line) {
+                append(start_line, ..end_line[end_byte:])
+            }
+
+            for y := end_vis.y; y > start_vis.y; y -= 1 {
+                delete(editor.lines[y])
+                ordered_remove(&editor.lines, y)
+            }
+        }
+
+        c.head   = start_vis
+        c.anchor = start_vis
+    }
+}
+
+has_any_selection :: proc() -> bool {
+    for c in editor.cursor {
+        if c.anchor != c.head do return true
+    }
+    return false
+}
+
 insert_char :: proc(ch: rune) {
     if len(editor.lines) == 0 {
         append(&editor.lines, make([dynamic]u8))
     }
 
     clamp_cursor()
+    delete_selection()
 
-    line := &editor.lines[editor.cursor[0].head.y]
+    indices := make([dynamic]int, 0, len(editor.cursor))
+    defer delete(indices)
 
-    byte_idx := visual_x_to_byte_idx(line[:], editor.cursor[0].head.x)
-    buf, bytes_len := utf8.encode_rune(ch)
-
-    for i in 0 ..< bytes_len {
-        inject_at(line, byte_idx + i, buf[i])
+    for i in 0 ..< len(editor.cursor) {
+        append(&indices, i)
     }
 
-    if ch == '\t' {
-        editor.cursor[0].head.x += 4 - (editor.cursor[0].head.x % 4)
-        editor.cursor[0].anchor.x += 4 - (editor.cursor[0].head.x % 4)
-    } else {
-        editor.cursor[0].head.x += 1
-        editor.cursor[0].anchor.x += 1
+    slice.sort_by(indices[:], proc(i, j: int) -> bool {
+        c1, c2 := editor.cursor[i], editor.cursor[j]
+        if c1.head.y != c2.head.y do return c1.head.y > c2.head.y
+        return c1.head.x > c2.head.x
+    })
+
+    for idx in indices {
+        c := &editor.cursor[idx]
+        line := &editor.lines[c.head.y]
+
+        byte_idx := visual_x_to_byte_idx(line[:], c.head.x)
+        buf, bytes_len := utf8.encode_rune(ch)
+
+        for i in 0 ..< bytes_len {
+            inject_at(line, byte_idx + i, buf[i])
+        }
+
+        step := 1
+        if ch == '\t' {
+            step = 4 - (c.head.x % 4)
+        }
+
+        orig_x := c.head.x
+
+        c.head.x += step
+        c.anchor = c.head
+
+        for &other in editor.cursor {
+            if &other == c do continue
+            if other.head.y == c.head.y && other.head.x > orig_x {
+                other.head.x += step
+                other.anchor.x += step
+            }
+        }
     }
 }
 
@@ -136,6 +236,7 @@ insert_newline :: proc() {
 	}
 
 	clamp_cursor()
+    delete_selection()
 
 	curr_line := &editor.lines[editor.cursor[0].head.y]
 	new_line := make([dynamic]u8)
@@ -148,7 +249,9 @@ insert_newline :: proc() {
 	inject_at(&editor.lines, editor.cursor[0].head.y + 1, new_line)
 
 	editor.cursor[0].head.y += 1
+    editor.cursor[0].anchor.y += 1
 	editor.cursor[0].head.x = 0
+	editor.cursor[0].anchor.x = 0
 }
 
 visual_x_to_byte_idx :: proc(line: []u8, target_x: int) -> int {
@@ -179,87 +282,115 @@ byte_idx_to_visual_x :: proc(line: []u8, target_byte: int) -> int {
     return vis_x
 }
 
+get_line_visual_width :: proc(line: []u8) -> int {
+    return byte_idx_to_visual_x(line, len(line))
+}
+
 backspace_char :: proc() {
     if len(editor.lines) == 0 do return
-
     clamp_cursor()
 
-    if editor.cursor[0].head.x > 0 {
-        line := &editor.lines[editor.cursor[0].head.y]
-        
-        // 1. Find byte index before moving cursor
-        byte_idx := visual_x_to_byte_idx(line[:], editor.cursor[0].head.x)
-        
-        if byte_idx > 0 {
-            target_idx := byte_idx - 1
-            deleted_char := line[target_idx]
-            
-            // Delete the byte at the calculated index
-            ordered_remove(line, target_idx)
-            
-            // Adjust visual cursor.x based on what was actually deleted
-            if deleted_char == '\t' {
-                // Recalculate exact visual x at target_idx
-                editor.cursor[0].head.x = 0
-                for i in 0 ..< target_idx {
-                    if line[i] == '\t' {
-                        editor.cursor[0].head.x += 4 - (editor.cursor[0].head.x % 4)
-                    } else {
-                        editor.cursor[0].head.x += 1
+    if has_any_selection() {
+        delete_selection()
+        return
+    }
+
+    indices := make([dynamic]int, 0, len(editor.cursor))
+    defer delete(indices)
+
+    for i in 0 ..< len(editor.cursor) {
+        append(&indices, i)
+    }
+
+    slice.sort_by(indices[:], proc(i, j: int) -> bool {
+        c1, c2 := editor.cursor[i], editor.cursor[j]
+        if c1.head.y != c2.head.y do return c1.head.y > c2.head.y
+        return c1.head.x > c2.head.x
+    })
+
+    for idx in indices {
+        c := &editor.cursor[idx]
+
+        if c.head.x > 0 {
+            line := &editor.lines[c.head.y]
+            byte_idx := visual_x_to_byte_idx(line[:], c.head.x)
+
+            if byte_idx > 0 {
+                target_idx := byte_idx - 1
+                orig_x := c.head.x
+
+                ordered_remove(line, target_idx)
+                c.head.x = byte_idx_to_visual_x(line[:], target_idx)
+                c.anchor = c.head
+                vis_delta := orig_x - c.head.x
+                for &other in editor.cursor {
+                    if &other == c do continue
+                    if other.head.y == c.head.y && other.head.x > orig_x {
+                        other.head.x = max(0, other.head.x - vis_delta)
+                        other.anchor = other.head
                     }
                 }
-            } else {
-                editor.cursor[0].head.x -= 1
+            }
+
+        } else if c.head.y > 0 {
+            deleted_line_idx := c.head.y
+            prev_line_idx := c.head.y - 1
+
+            prev_line := &editor.lines[prev_line_idx]
+            prev_visual_x := get_line_visual_width(prev_line[:])
+
+            curr_line := editor.lines[deleted_line_idx]
+            append(prev_line, ..curr_line[:])
+
+            delete(curr_line)
+            ordered_remove(&editor.lines, deleted_line_idx)
+
+            c.head.y = prev_line_idx
+            c.head.x = prev_visual_x
+
+            c.anchor = c.head
+
+            for &other in editor.cursor {
+                if &other == c do continue
+                if other.head.y == deleted_line_idx {
+                    other.head.y = prev_line_idx
+                    other.head.x += prev_visual_x
+                    other.anchor = other.head
+                } else if other.head.y > deleted_line_idx {
+                    move_cursor_left()
+                }
             }
         }
-
-    } else if editor.cursor[0].head.y > 0 {
-        // Line joining logic (remains mostly the same, but calculate visual width)
-        prev_line := &editor.lines[editor.cursor[0].head.y - 1]
-        
-        // Calculate visual length of previous line
-        prev_visual_x := 0
-        for b in prev_line {
-            if b == '\t' {
-                prev_visual_x += 4 - (prev_visual_x % 4)
-            } else {
-                prev_visual_x += 1
-            }
-        }
-
-        curr_line := editor.lines[editor.cursor[0].head.y]
-        append(prev_line, ..curr_line[:])
-
-        delete(curr_line)
-        ordered_remove(&editor.lines, editor.cursor[0].head.y)
-
-        editor.cursor[0].head.y -= 1
-        editor.cursor[0].head.x = prev_visual_x
     }
 }
 
 delete_char :: proc() {
     if len(editor.lines) == 0 do return
-
     clamp_cursor()
 
-    line := &editor.lines[editor.cursor[0].head.y]
-    byte_idx := visual_x_to_byte_idx(line[:], editor.cursor[0].head.x)
+    if has_any_selection() {
+        delete_selection()
+        return
+    }
 
-    if byte_idx < len(line^) {
-        ordered_remove(line, byte_idx)
-
-    } else if editor.cursor[0].head.y < len(editor.lines) - 1 {
-        next_line := editor.lines[editor.cursor[0].head.y + 1]
-
-        append(line, ..next_line[:])
-
-        delete(next_line)
-        ordered_remove(&editor.lines, editor.cursor[0].head.y + 1)
+    for &c in editor.cursor {
+        line := &editor.lines[c.head.y]
+        byte_idx := visual_x_to_byte_idx(line[:], c.head.x)
+    
+        if byte_idx < len(line^) {
+            ordered_remove(line, byte_idx)
+        } else if c.head.y < len(editor.lines) - 1 {
+            next_line := editor.lines[c.head.y + 1]
+    
+            append(line, ..next_line[:])
+    
+            delete(next_line)
+            ordered_remove(&editor.lines, c.head.y + 1)
+        }
     }
 }
 
-scroll_viewport :: proc(visible_height: i32) {
+scroll_viewport :: proc(visible_height: int) {
 	if visible_height <= 0 do return
 
 	if editor.row_offset >= len(editor.lines) && len(editor.lines) > 0 {
@@ -275,7 +406,7 @@ scroll_viewport :: proc(visible_height: i32) {
 	}
 }
 
-scroll_explorer_viewport :: proc(visible_height: i32) {
+scroll_explorer_viewport :: proc(visible_height: int) {
 	if visible_height <= 0 do return
 
 	if editor.explorer.selected < editor.explorer.scroll_offset {

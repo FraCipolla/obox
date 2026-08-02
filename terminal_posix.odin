@@ -47,12 +47,12 @@ die :: proc(s: string) {
     os.exit(1)
 }
 
-get_window_size :: proc() -> (width, height: i32, err: bool) {
+get_window_size :: proc() -> (width, height: int, err: bool) {
     ws: Winsize
     res := linux.ioctl(linux.Fd(1), linux.TIOCGWINSZ, uintptr(&ws))
 
     if res < 0xFFFFF000 {
-        return i32(ws.ws_col), i32(ws.ws_row), false
+        return int(ws.ws_col), int(ws.ws_row), false
     }
     return 80, 24, true
 }
@@ -60,7 +60,7 @@ get_window_size :: proc() -> (width, height: i32, err: bool) {
 update_terminal_size :: proc() {
     ws: Winsize
     if linux.ioctl(1, linux.TIOCGWINSZ, uintptr(&ws)) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
-        editor.cols = i32(ws.ws_col)
-        editor.rows = i32(ws.ws_row)
+        editor.cols = int(ws.ws_col)
+        editor.rows = int(ws.ws_row)
     }
 }

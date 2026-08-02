@@ -1,6 +1,8 @@
 package main
 
 import "core:unicode/utf8"
+import "core:slice"
+import "core:bytes"
 
 Position :: struct {
 	x: int,
@@ -67,7 +69,6 @@ reset_to_single_cursor :: proc() {
     }
 }
 
-// Keeps head and anchor within valid file line and character bounds
 clamp_cursor :: proc() {
     ensure_primary_cursor()
 
@@ -100,7 +101,6 @@ clamp_cursor :: proc() {
     }
 }
 
-// Keeps the primary cursor in view by scrolling row_offset
 scroll_cursor_into_view :: proc() {
     ensure_primary_cursor()
     primary := editor.cursor[0]
@@ -114,11 +114,7 @@ scroll_cursor_into_view :: proc() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Navigation Routines (Supports Shift-selection across all directions)
-// ---------------------------------------------------------------------------
-
-move_cursor_left :: proc(shift_held: bool) {
+move_cursor_left :: proc(shift_held: bool = false) {
     ensure_primary_cursor()
     
     for &c in editor.cursor {
@@ -215,4 +211,169 @@ move_cursor_end :: proc(shift_held: bool) {
         }
     }
     scroll_cursor_into_view()
+}
+
+move_line_up :: proc() {
+    for &c in editor.cursor {
+        if c.anchor.y == 0 do continue 
+        swap := editor.lines[c.anchor.y]
+        editor.lines[c.anchor.y] = editor.lines[c.anchor.y - 1]
+        editor.lines[c.anchor.y - 1] = swap
+        move_cursor_up(false)
+    }
+}
+
+move_line_down :: proc() {
+    for &c in editor.cursor {
+        if c.anchor.y == editor.rows do continue 
+        swap := editor.lines[c.anchor.y]
+        editor.lines[c.anchor.y] = editor.lines[c.anchor.y + 1]
+        editor.lines[c.anchor.y + 1] = swap
+        move_cursor_down(false)
+    }
+}
+
+duplicate_line_up :: proc() {
+    for &c in editor.cursor {
+        inject_at(&editor.lines, c.anchor.y, slice.clone_to_dynamic(editor.lines[c.anchor.y][:]))
+    }
+}
+
+duplicate_line_down :: proc() {
+    for &c in editor.cursor {
+        inject_at(&editor.lines, c.anchor.y, slice.clone_to_dynamic(editor.lines[c.anchor.y][:]))
+        move_cursor_down(false)
+    }
+}
+
+add_cursor_above :: proc() {
+    if len(editor.cursor) == 0 || len(editor.lines) == 0 do return
+
+    top_cursor := editor.cursor[0]
+    for c in editor.cursor {
+        if c.head.y < top_cursor.head.y {
+            top_cursor = c
+        }
+    }
+
+    target_y := top_cursor.head.y - 1
+    if target_y < 0 do return
+
+    line_len := len(editor.lines[target_y])
+    target_x := clamp(top_cursor.head.x, 0, line_len)
+
+    for c in editor.cursor {
+        if c.head.y == target_y && c.head.x == target_x do return
+    }
+
+    pos := Position{x = target_x, y = target_y}
+    append(&editor.cursor, Cursor{anchor = pos, head = pos})
+}
+
+add_cursor_below :: proc() {
+    if len(editor.cursor) == 0 || len(editor.lines) == 0 do return
+
+    bottom_cursor := editor.cursor[0]
+    for c in editor.cursor {
+        if c.head.y > bottom_cursor.head.y {
+            bottom_cursor = c
+        }
+    }
+
+    target_y := bottom_cursor.head.y + 1
+    if target_y >= len(editor.lines) do return
+
+    line_len := len(editor.lines[target_y])
+    target_x := clamp(bottom_cursor.head.x, 0, line_len)
+
+    for c in editor.cursor {
+        if c.head.y == target_y && c.head.x == target_x do return
+    }
+
+    pos := Position{x = target_x, y = target_y}
+    append(&editor.cursor, Cursor{anchor = pos, head = pos})
+}
+
+expand_word_from_cursor_pos :: proc(c: ^Cursor) {
+    if c.head.y >= len(editor.lines) do return
+    line := editor.lines[c.head.y][:]
+    if len(line) == 0 do return
+
+    x := clamp(c.head.x, 0, len(line) - 1)
+
+    if !is_word_char(line[x - 1]) do return
+
+    start_x := x
+    for start_x > 0 && is_word_char(line[start_x - 1]) {
+        start_x -= 1
+    }
+
+    end_x := x
+    for end_x < len(line) && is_word_char(line[end_x]) {
+        end_x += 1
+    }
+
+    c.anchor.x = start_x
+    c.head.x   = end_x
+}
+
+find_next_occurrence :: proc(target: []u8, start_y, start_x: int) -> (found_y, found_x: int, ok: bool) {
+    num_lines := len(editor.lines)
+    if num_lines == 0 || len(target) == 0 do return 0, 0, false
+
+    for i in 0 ..< num_lines {
+        y := (start_y + i) % num_lines
+        line := editor.lines[y][:]
+
+        search_from := 0
+        if i == 0 {
+            search_from = clamp(start_x, 0, len(line))
+        }
+
+        if search_from >= len(line) do continue
+        if match_offset := bytes.index(line[search_from:], target); match_offset != -1 {
+            return y, search_from + match_offset, true
+        }
+    }
+
+    return 0, 0, false
+}
+
+select_next_match :: proc() {
+    if len(editor.cursor) == 0 do return
+
+    primary := &editor.cursor[0]
+
+    if primary.anchor == primary.head {
+        expand_word_from_cursor_pos(primary)
+        return
+    }
+
+    line := editor.lines[primary.head.y][:]
+    sel_start := min(primary.anchor.x, primary.head.x)
+    sel_end   := max(primary.anchor.x, primary.head.x)
+
+    if sel_start < 0 || sel_end > len(line) do return
+    target := line[sel_start:sel_end]
+    if len(target) == 0 do return
+
+    last_cursor := editor.cursor[len(editor.cursor) - 1]
+    search_start_y := last_cursor.head.y
+    search_start_x := max(last_cursor.anchor.x, last_cursor.head.x)
+
+    found_y, found_x, ok := find_next_occurrence(target, search_start_y, search_start_x)
+    if !ok do return
+    
+    for c in editor.cursor {
+        c_min_x := min(c.anchor.x, c.head.x)
+        if c.head.y == found_y && c_min_x == found_x {
+            return
+        }
+    }
+
+    new_cursor: Cursor
+    new_cursor.anchor = { x = found_x,               y = found_y }
+    new_cursor.head   = { x = found_x + len(target), y = found_y }
+
+    append(&editor.cursor, new_cursor)
 }

@@ -18,13 +18,13 @@ disable_raw_mode :: proc() {
     win.SetConsoleMode(stdin, orig_mode)
 }
 
-get_terminal_size :: proc() -> (width: i32, height: i32) {
+get_terminal_size :: proc() -> (width: int, height: int) {
     stdout := win.GetStdHandle(win.STD_OUTPUT_HANDLE)
     info: win.CONSOLE_SCREEN_BUFFER_INFO
 
     if win.GetConsoleScreenBufferInfo(stdout, &info) {
-        width  = i32(info.srWindow.Right - info.srWindow.Left + 1)
-        height = i32(info.srWindow.Bottom - info.srWindow.Top + 1)
+        width  = int(info.srWindow.Right - info.srWindow.Left + 1)
+        height = int(info.srWindow.Bottom - info.srWindow.Top + 1)
         return width, height
     }
     return 80, 24

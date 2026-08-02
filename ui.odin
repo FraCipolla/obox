@@ -14,7 +14,7 @@ INDENT_COLORS := [4][3]u8{
     {100,  80,  60}, // Level 3: Soft amber
 }
 
-move_cursor :: proc(x, y: i32) {
+move_cursor :: proc(x, y: int) {
 	fmt.printf("\x1b[%d;%dH", y + 1, x + 1)
 }
 
@@ -30,7 +30,7 @@ reset_color :: proc() {
 	fmt.print("\x1b[0m")
 }
 
-draw_explorer :: proc(width, height: i32) {
+draw_explorer :: proc(width, height: int) {
 	if width <= 1 do return
 
 	content_w := int(width) - 1
@@ -133,7 +133,6 @@ render_line_with_indent_guides :: proc(line: string, line_idx: int, lines: [][dy
 
     current_x := 0
 
-    // 1. Render indent guide lines with selection check
     for guide_idx in 0 ..< guides {
         color := INDENT_COLORS[guide_idx % len(INDENT_COLORS)]
         
@@ -156,7 +155,6 @@ render_line_with_indent_guides :: proc(line: string, line_idx: int, lines: [][dy
         current_x += 4
     }
 
-    // 2. Render remaining spaces
     if i < len(line) {
         for _ in 0 ..< remainder_spaces {
             if is_selected_in_any_cursor(current_x, line_idx) {
@@ -168,7 +166,6 @@ render_line_with_indent_guides :: proc(line: string, line_idx: int, lines: [][dy
             current_x += 1
         }
 
-        // 3. Render body text character-by-character
         set_fg_rgb(220, 225, 235)
         text_content := line[i:]
 
@@ -198,8 +195,8 @@ render_line_with_indent_guides :: proc(line: string, line_idx: int, lines: [][dy
     fmt.print("\x1b[0m")
 }
 
-draw_code_editor :: proc(start_x, start_y, width, height: i32) {
-    gutter_width: i32 = 6
+draw_code_editor :: proc(start_x, start_y, width, height: int) {
+    gutter_width: int = 6
 
     for y in 0 ..< height {
         move_cursor(start_x, start_y + y)
@@ -218,7 +215,6 @@ draw_code_editor :: proc(start_x, start_y, width, height: i32) {
                 line_str = line_str[:max_text_len]
             }
 
-            // Pass line_idx and editor.lines so empty lines can resolve their indentation
             render_line_with_indent_guides(line_str, line_idx, editor.lines[:])
         } else {
             set_fg_rgb(60, 68, 80)
@@ -228,8 +224,55 @@ draw_code_editor :: proc(start_x, start_y, width, height: i32) {
         fmt.print(ansi.CSI + "K")
         reset_color()
     }
+
+    draw_cursors(start_x, start_y, width, height, gutter_width)
 }
-draw_status_bar :: proc(width, height: i32) {
+
+draw_cursors :: proc(start_x, start_y, width, height, gutter_width: int) {
+    if len(editor.cursor) == 0 do return
+
+    for c, i in editor.cursor {
+        if c.head.y < editor.row_offset || c.head.y >= editor.row_offset + height {
+            continue
+        }
+
+        screen_y := start_y + (c.head.y - editor.row_offset)
+        screen_x := start_x + gutter_width + c.head.x
+
+        if screen_x >= start_x + width do continue
+
+        move_cursor(screen_x, screen_y)
+
+        if i == 0 {
+            continue
+        }
+
+        char_at_cursor: byte = ' '
+        if c.head.y < len(editor.lines) {
+            line := editor.lines[c.head.y]
+            byte_idx := visual_x_to_byte_idx(line[:], c.head.x)
+            if byte_idx < len(line) {
+                char_at_cursor = line[byte_idx]
+            }
+        }
+
+		if char_at_cursor == '\t' do char_at_cursor = ' '
+		
+        fmt.print(ansi.CSI + "7m")
+        fmt.printf("%c", char_at_cursor)
+        fmt.print(ansi.CSI + "27m")
+    }
+
+    // Finally, position the real hardware terminal cursor at cursor[0]
+    primary := editor.cursor[0]
+    if primary.head.y >= editor.row_offset && primary.head.y < editor.row_offset + height {
+        screen_y := start_y + (primary.head.y - editor.row_offset)
+        screen_x := start_x + gutter_width + primary.head.x
+        move_cursor(screen_x, screen_y)
+    }
+}
+
+draw_status_bar :: proc(width, height: int) {
 	if width <= 0 || height < 2 do return
 
 	move_cursor(0, height - 2)
@@ -282,10 +325,10 @@ draw_status_bar :: proc(width, height: i32) {
 	reset_color()
 }
 
-draw_command_box :: proc(cursor_screen_x, cursor_screen_y: i32) -> (i32, i32) {
-	if editor.active_panel != .CommandPopup do return 0, 0
+draw_command_box :: proc(cursor_screen_x, cursor_screen_y: int) -> (int, int) {
+	if editor.active_panel != .Command do return 0, 0
 
-	box_width: i32 = 36
+	box_width: int = 36
 
 	px := cursor_screen_x
 	py := cursor_screen_y + 1
@@ -298,8 +341,8 @@ draw_command_box :: proc(cursor_screen_x, cursor_screen_y: i32) -> (i32, i32) {
 		py = max(0, cursor_screen_y - 3)
 	}
 
-	cmd_len := len(editor.cmd_box.buff)
-	cmd_cursor := clamp(editor.cmd_box.cursor.head.x, 0, cmd_len)
+	cmd_len := len(editor.popup_box.buff)
+	cmd_cursor := clamp(editor.popup_box.cursor.head.x, 0, cmd_len)
 
 	max_input_w := int(box_width - 4)
 
@@ -312,7 +355,7 @@ draw_command_box :: proc(cursor_screen_x, cursor_screen_y: i32) -> (i32, i32) {
 	visible_len := min(cmd_len - scroll_offset, max_input_w)
 	display_cmd := ""
 	if visible_len > 0 && scroll_offset < cmd_len {
-		display_cmd = string(editor.cmd_box.buff[scroll_offset:scroll_offset + visible_len])
+		display_cmd = string(editor.popup_box.buff[scroll_offset:scroll_offset + visible_len])
 	}
 
 	set_bg_rgb(30, 34, 42)
@@ -344,7 +387,7 @@ draw_command_box :: proc(cursor_screen_x, cursor_screen_y: i32) -> (i32, i32) {
 
 	reset_color()
 
-	input_cursor_x := px + 3 + i32(cmd_cursor - scroll_offset)
+	input_cursor_x := px + 3 + int(cmd_cursor - scroll_offset)
 	input_cursor_y := py + 1
 	return input_cursor_x, input_cursor_y
 }
@@ -367,7 +410,7 @@ editor_refresh_screen :: proc() {
 
 	explorer_w := editor.show_explorer ? editor.explorer_width : 0
 	content_height := max(1, editor.rows - 2)
-	gutter_width: i32 = 6
+	gutter_width: int = 6
 
 	scroll_viewport(content_height)
 	scroll_explorer_viewport(content_height)
@@ -381,17 +424,22 @@ editor_refresh_screen :: proc() {
 
 	draw_status_bar(editor.cols, editor.rows)
 
-	screen_x := explorer_w + gutter_width + i32(editor.cursor[0].head.x)
-	screen_y := i32(editor.cursor[0].head.y - editor.row_offset)
+	screen_x := explorer_w + gutter_width + int(editor.cursor[0].head.x)
+	screen_y := int(editor.cursor[0].head.y - editor.row_offset)
 
-	if editor.active_panel == .CommandPopup {
+	#partial switch editor.active_panel {
+	case .Command:
 		popup_cursor_x, popup_cursor_y := draw_command_box(screen_x, screen_y)
 		move_cursor(popup_cursor_x, popup_cursor_y)
 		fmt.print(ansi.CSI + ansi.DECTCEM_SHOW)
-	} else if editor.active_panel == .Explorer {
-		exp_y := i32(editor.explorer.selected - editor.explorer.scroll_offset)
+	case .Explorer:
+		exp_y := int(editor.explorer.selected - editor.explorer.scroll_offset)
 		move_cursor(1, exp_y)
-	} else {
+	case .Find:
+		popup_cursor_x, popup_cursor_y := draw_find_box()
+		move_cursor(popup_cursor_x, popup_cursor_y)
+		fmt.print(ansi.CSI + ansi.DECTCEM_SHOW)
+	case:
 		move_cursor(screen_x, screen_y)
 		fmt.print(ansi.CSI + ansi.DECTCEM_SHOW)
 	}

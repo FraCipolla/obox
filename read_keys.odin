@@ -2,10 +2,10 @@ package main
 
 import "core:os"
 
-// --- Enums & Core Types ---
+// Enums & Core Types
 
 Key_Code :: enum {
-	UNKOWN,
+	UNKOWN,									// fallback case
 	BACKSPACE, ENTER, ESCAPE, TAB, DELETE,
 	UP, DOWN, LEFT, RIGHT,
 	PAGE_UP, PAGE_DOWN, HOME, END,
@@ -23,43 +23,82 @@ Key_Event :: struct {
 
 Direction :: enum { UP, DOWN, LEFT, RIGHT, HOME, END, PAGE_UP, PAGE_DOWN }
 
-// --- Actions ---
+// Actions
 
 ActionMove                :: struct { dir: Direction }
 ActionSelect              :: struct { dir: Direction }
-ActionExplorerResize      :: struct { delta: i32 }
-ActionBackspace           :: struct {}
-ActionDelete              :: struct {}
-ActionEnter               :: struct {}
-ActionEscape              :: struct {}
+ActionMoveLine            :: struct { dir: Direction } // MOVE_LINE_UP / DOWN
+ActionDuplicateLine       :: struct { dir: Direction } // DOUBLE_LINE_UP / DOWN
+ActionAddCursor           :: struct { dir: Direction } // ADD_CURSOR_UP / DOWN
+
+ActionCopy                :: struct {} // COPY
+ActionPaste               :: struct {} // PASTE
+ActionCut                 :: struct {} // CUT
+
+ActionBackspace           :: struct {} // BACKSPACE
+ActionDelete              :: struct {} // DEL
+ActionEnter               :: struct {} // ENTER
+ActionEscape              :: struct {} 
 ActionInsertChar          :: struct { r: rune }
+
+ActionSelectMatch         :: struct { all: bool } // SELECT_NEXT_MATCH / SELECT_ALL_MATCHES
+ActionGoToLine            :: struct {}            // GO_TO_LINE
+ActionGoToDefinition      :: struct {}            // GO_TO_DEFINITION
+
+ActionOpenCommand    :: struct {} // COMMAND_PANEL
+ActionOpenFindPanel       :: struct {} // FIND_PANEL
+ActionOpenTerminalPanel   :: struct {} // TERMINAL_PANEL
+ActionOpenGitPanel        :: struct {} // GIT_PANEL
+
+ActionToggleExplorer      :: struct {} 
+ActionToggleExplorerFocus :: struct {}
+ActionExplorerResize      :: struct { delta: int }
+
+ActionComment             :: struct { block: bool } // COMMENT_LINE / BLOCK_COMMENT
+ActionSplitEditor         :: struct { vertical: bool } // SPLIT_EDITOR_V / H
+ActionRecordMacro         :: struct {} // RECORD_MACRO
+ActionPlayMacro           :: struct {} // PLAY_MACRO
+
 ActionQuit                :: struct {}
 ActionSave                :: struct {}
-ActionOpenCommandPopup    :: struct {}
-ActionToggleExplorer      :: struct {}
-ActionToggleExplorerFocus :: struct {}
 
 Action :: union {
 	ActionMove,
 	ActionSelect,
-	ActionExplorerResize,
+	ActionMoveLine,
+	ActionDuplicateLine,
+	ActionAddCursor,
+	ActionCopy,
+	ActionPaste,
+	ActionCut,
 	ActionBackspace,
 	ActionDelete,
 	ActionEnter,
 	ActionEscape,
 	ActionInsertChar,
-	ActionQuit,
-	ActionSave,
-	ActionOpenCommandPopup,
+	ActionSelectMatch,
+	ActionGoToLine,
+	ActionGoToDefinition,
+	ActionOpenCommand,
+	ActionOpenFindPanel,
+	ActionOpenTerminalPanel,
+	ActionOpenGitPanel,
 	ActionToggleExplorer,
 	ActionToggleExplorerFocus,
+	ActionExplorerResize,
+	ActionComment,
+	ActionSplitEditor,
+	ActionRecordMacro,
+	ActionPlayMacro,
+	ActionQuit,
+	ActionSave,
 }
 
 Keymap :: struct {
 	bindings: map[Key_Event]Action,
 }
 
-// --- Keymap Binding ---
+// Keymap Binding
 
 bind_keys :: proc(km: ^Keymap, action: Action, events: ..Key_Event) {
 	for e in events {
@@ -70,10 +109,13 @@ bind_keys :: proc(km: ^Keymap, action: Action, events: ..Key_Event) {
 init_keymap :: proc(km: ^Keymap) {
 	km.bindings = make(map[Key_Event]Action)
 
-	// Global / Shortcuts
+	// System & Global Panels
 	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'q'}] = ActionQuit{}
-	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'p'}] = ActionOpenCommandPopup{}
 	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 's'}] = ActionSave{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'p'}] = ActionOpenCommand{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'f'}] = ActionOpenFindPanel{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = '`'}] = ActionOpenTerminalPanel{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'g'}] = ActionOpenGitPanel{}
 	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'b'}] = ActionToggleExplorer{}
 	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'e'}] = ActionToggleExplorerFocus{}
 
@@ -81,7 +123,7 @@ init_keymap :: proc(km: ^Keymap) {
 	km.bindings[{code = .LEFT, modifiers = {.ALT}}]  = ActionExplorerResize{delta = -2}
 	km.bindings[{code = .RIGHT, modifiers = {.ALT}}] = ActionExplorerResize{delta = 2}
 
-	// Normal Navigation
+	// Basic Movement
 	bind_keys(km, ActionMove{dir = .UP},
 		Key_Event{code = .UP},
 		Key_Event{code = .RUNE, modifiers = {.ALT}, r = 'i'},
@@ -101,7 +143,7 @@ init_keymap :: proc(km: ^Keymap) {
 	bind_keys(km, ActionMove{dir = .HOME}, Key_Event{code = .HOME})
 	bind_keys(km, ActionMove{dir = .END},  Key_Event{code = .END})
 
-	// Selection Navigation (SHIFT + Movement)
+	// Selection (SHIFT + Movement)
 	bind_keys(km, ActionSelect{dir = .UP},
 		Key_Event{code = .UP, modifiers = {.SHIFT}},
 		Key_Event{code = .RUNE, modifiers = {.ALT, .SHIFT}, r = 'I'},
@@ -121,11 +163,40 @@ init_keymap :: proc(km: ^Keymap) {
 	bind_keys(km, ActionSelect{dir = .HOME}, Key_Event{code = .HOME, modifiers = {.SHIFT}})
 	bind_keys(km, ActionSelect{dir = .END},  Key_Event{code = .END, modifiers = {.SHIFT}})
 
+	// Line Manipulation & Multi-Cursor
+	km.bindings[{code = .UP, modifiers = {.ALT}}]         				= ActionMoveLine{dir = .UP}
+	km.bindings[{code = .DOWN, modifiers = {.ALT}}]       				= ActionMoveLine{dir = .DOWN}
+	km.bindings[{code = .UP, modifiers = {.ALT, .SHIFT}}]   			= ActionDuplicateLine{dir = .UP}
+	km.bindings[{code = .DOWN, modifiers = {.ALT, .SHIFT}}] 			= ActionDuplicateLine{dir = .DOWN}
+	km.bindings[{code = .UP, modifiers = {.CTRL, .ALT}}]  				= ActionAddCursor{dir = .UP}
+	km.bindings[{code = .DOWN, modifiers = {.CTRL, .ALT}}] 				= ActionAddCursor{dir = .DOWN}
+
+	// Clipboard Operations
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'c'}] 			= ActionCopy{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'v'}] 			= ActionPaste{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'x'}] 			= ActionCut{}
+
+	// Code Navigation & Search
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'd'}]         	= ActionSelectMatch{all = false}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL, .SHIFT}, r = 'D'}] 	= ActionSelectMatch{all = true}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'l'}]         	= ActionGoToLine{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = ']'}]         	= ActionGoToDefinition{}
+
+	// Formatting & Comments
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = '/'}]         	= ActionComment{block = false}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL, .SHIFT}, r = '?'}] 	= ActionComment{block = true}
+
+	// Editor Splits & Macros
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = '\\'}]        	= ActionSplitEditor{vertical = true}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL, .SHIFT}, r = '|'}] 	= ActionSplitEditor{vertical = false}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'r'}]         	= ActionRecordMacro{}
+	km.bindings[{code = .RUNE, modifiers = {.CTRL}, r = 'm'}]         	= ActionPlayMacro{}
+
 	// Editing & System
-	km.bindings[{code = .BACKSPACE}] = ActionBackspace{}
-	km.bindings[{code = .DELETE}]    = ActionDelete{}
-	km.bindings[{code = .ENTER}]     = ActionEnter{}
-	km.bindings[{code = .ESCAPE}]    = ActionEscape{}
+	km.bindings[{code = .BACKSPACE}] 									= ActionBackspace{}
+	km.bindings[{code = .DELETE}]    									= ActionDelete{}
+	km.bindings[{code = .ENTER}]     									= ActionEnter{}
+	km.bindings[{code = .ESCAPE}]    									= ActionEscape{}
 }
 
 get_action :: proc(km: ^Keymap, event: Key_Event) -> (Action, bool) {
@@ -144,7 +215,7 @@ resolve_action :: proc(km: ^Keymap, event: Key_Event) -> (Action, bool) {
 	return nil, false
 }
 
-// --- Keypress Execution Pipeline ---
+// Keypress Execution Pipeline
 
 process_keypress :: proc(km: ^Keymap) -> bool {
 	event, ok := read_key()
@@ -153,21 +224,35 @@ process_keypress :: proc(km: ^Keymap) -> bool {
 	action, resolved := resolve_action(km, event)
 	if !resolved do return true
 
-	// 1. Global Commands
 	switch a in action {
 	case ActionQuit:
 		return false
 
-	case ActionOpenCommandPopup:
-		editor.active_panel = .CommandPopup
-		clear(&editor.cmd_box.buff)
-		editor.cmd_box.cursor.head.x = 0
-		editor.cmd_box.cursor.head.y = 0
-		return true
-
 	case ActionSave:
 		editor.status_msg = "saving..."
 		save_file()
+		return true
+
+	case ActionOpenCommand:
+		editor.active_panel = .Command
+		clear(&editor.popup_box.buff)
+		editor.popup_box.cursor.head.x = 0
+		editor.popup_box.cursor.head.y = 0
+		return true
+
+	case ActionOpenFindPanel:
+		editor.active_panel = .Find
+		clear(&editor.popup_box.buff)
+		editor.popup_box.cursor.head.x = 0
+		editor.popup_box.cursor.head.y = 0
+		return true
+
+	case ActionOpenTerminalPanel:
+		editor.active_panel = .Terminal
+		return true
+
+	case ActionOpenGitPanel:
+		editor.active_panel = .Git
 		return true
 
 	case ActionToggleExplorer:
@@ -180,7 +265,7 @@ process_keypress :: proc(km: ^Keymap) -> bool {
 			editor.status_msg = "Focus: Editor"
 		} else {
 			editor.active_panel = .Explorer
-			editor.status_msg = "Focus: Explorer (Use Up/Down, Enter to select, Esc to return)"
+			editor.status_msg = "Focus: Explorer"
 		}
 		return true
 
@@ -191,63 +276,157 @@ process_keypress :: proc(km: ^Keymap) -> bool {
 		}
 		return true
 
-	case ActionMove, ActionSelect, ActionEnter, ActionEscape, ActionBackspace, ActionDelete, ActionInsertChar:
+	case ActionMove, ActionSelect, ActionMoveLine, ActionDuplicateLine, ActionAddCursor,
+	     ActionCopy, ActionPaste, ActionCut, ActionBackspace, ActionDelete, ActionEnter,
+	     ActionEscape, ActionInsertChar, ActionSelectMatch, ActionGoToLine, ActionGoToDefinition,
+	     ActionComment, ActionSplitEditor, ActionRecordMacro, ActionPlayMacro:
 		// Fall through to panel dispatch
 	case:
 	}
 
-	// 2. Active Panel Handler
 	switch editor.active_panel {
-	case .CommandPopup:
-		dispatch_command_popup_action(action)
-	case .Explorer:
-		dispatch_explorer_action(action)
-	case .Editor:
-		dispatch_editor_action(action)
+	case .Command: 		dispatch_command_popup_action(action)
+	case .Explorer:     dispatch_explorer_action(action)
+	case .Editor:       dispatch_editor_action(action)
+	case .Find:         dispatch_find_action(action)
+	case .Terminal:     // dispatch_terminal_action(action)
+	case .Git:          // dispatch_git_action(action)
 	}
 
 	return true
 }
 
-// --- Panel Action Handlers ---
+// Detailed Editor Action Dispatcher
+
+dispatch_editor_action :: proc(action: Action) {
+	#partial switch a in action {
+	// Movement & Selection
+	case ActionMove:
+		#partial switch a.dir {
+		case .UP:        move_cursor_up(shift_held = false)
+		case .DOWN:      move_cursor_down(shift_held = false)
+		case .LEFT:      move_cursor_left(shift_held = false)
+		case .RIGHT:     move_cursor_right(shift_held = false)
+		case .HOME:      move_cursor_home(shift_held = false)
+		case .END:       move_cursor_end(shift_held = false)
+		case .PAGE_UP, .PAGE_DOWN:
+		}
+
+	case ActionSelect:
+		#partial switch a.dir {
+		case .UP:        move_cursor_up(shift_held = true)
+		case .DOWN:      move_cursor_down(shift_held = true)
+		case .LEFT:      move_cursor_left(shift_held = true)
+		case .RIGHT:     move_cursor_right(shift_held = true)
+		case .HOME:      move_cursor_home(shift_held = true)
+		case .END:       move_cursor_end(shift_held = true)
+		case .PAGE_UP, .PAGE_DOWN:
+		}
+
+	// Line Rearranging & Duplication
+	case ActionMoveLine:
+		#partial switch a.dir {
+		case .UP:						move_line_up()
+		case .DOWN:						move_line_down()
+		}
+
+	case ActionDuplicateLine:
+		#partial switch a.dir {
+		case .UP:						duplicate_line_up()
+		case .DOWN:						duplicate_line_down()
+		}
+
+	case ActionAddCursor:
+		#partial switch a.dir {
+		case .UP:						add_cursor_above()
+		case .DOWN:						add_cursor_below()
+		}
+
+	// Clipboard Operations
+	case ActionCopy:  // copy_selection_to_clipboard()
+	case ActionPaste: // paste_from_clipboard()
+	case ActionCut:   // cut_selection_to_clipboard()
+
+	// Text Editing
+	case ActionEnter:      				insert_newline()
+	case ActionDelete:     				delete_char()
+	case ActionBackspace:  				backspace_char()
+	case ActionEscape:     				reset_to_single_cursor()
+	case ActionInsertChar: 				if a.r >= 32 && a.r <= 126 do insert_char(a.r)
+
+	// Matching & Search
+	case ActionSelectMatch:
+		if a.all {
+			// select_all_matches()
+		} else {
+			select_next_match()
+		}
+
+	case ActionGoToLine:       // prompt_go_to_line()
+	case ActionGoToDefinition: // go_to_definition()
+
+	// Comments & Splits
+	case ActionComment:
+		if a.block {
+			// toggle_block_comment()
+		} else {
+			// toggle_line_comment()
+		}
+
+	case ActionSplitEditor:
+		if a.vertical {
+			// split_editor_vertically()
+		} else {
+			// split_editor_horizontally()
+		}
+
+	// Macros
+	case ActionRecordMacro: // toggle_macro_recording()
+	case ActionPlayMacro:   // replay_macro()
+
+	case:
+	}
+}
+
+// Panel Action Handlers
 
 dispatch_command_popup_action :: proc(action: Action) {
 	#partial switch a in action {
 	case ActionMove:
 		#partial switch a.dir {
-		case .LEFT:  editor.cmd_box.cursor.head.x -= 1
-		case .RIGHT: editor.cmd_box.cursor.head.x += 1
-		case .HOME:  editor.cmd_box.cursor.head.x = 0
-		case .END:   editor.cmd_box.cursor.head.x = len(editor.cmd_box.buff)
+		case .LEFT:  editor.popup_box.cursor.head.x -= 1
+		case .RIGHT: editor.popup_box.cursor.head.x += 1
+		case .HOME:  editor.popup_box.cursor.head.x = 0
+		case .END:   editor.popup_box.cursor.head.x = len(editor.popup_box.buff)
 		}
-		clamp_cmd_cursor()
+		clamp_popup_cursor()
 
 	case ActionEscape:
 		editor.active_panel = .Editor
-		clear(&editor.cmd_box.buff)
-		editor.cmd_box.cursor.head.x = 0
+		clear(&editor.popup_box.buff)
+		editor.popup_box.cursor.head.x = 0
 
 	case ActionEnter:
-		execute_command(string(editor.cmd_box.buff[:]))
+		execute_command(string(editor.popup_box.buff[:]))
 		editor.active_panel = .Editor
-		clear(&editor.cmd_box.buff)
-		editor.cmd_box.cursor.head.x = 0
+		clear(&editor.popup_box.buff)
+		editor.popup_box.cursor.head.x = 0
 
 	case ActionDelete:
-		if editor.cmd_box.cursor.head.x < len(editor.cmd_box.buff) {
-			ordered_remove(&editor.cmd_box.buff, editor.cmd_box.cursor.head.x)
+		if editor.popup_box.cursor.head.x < len(editor.popup_box.buff) {
+			ordered_remove(&editor.popup_box.buff, editor.popup_box.cursor.head.x)
 		}
 
 	case ActionBackspace:
-		if editor.cmd_box.cursor.head.x > 0 {
-			editor.cmd_box.cursor.head.x -= 1
-			ordered_remove(&editor.cmd_box.buff, editor.cmd_box.cursor.head.x)
+		if editor.popup_box.cursor.head.x > 0 {
+			editor.popup_box.cursor.head.x -= 1
+			ordered_remove(&editor.popup_box.buff, editor.popup_box.cursor.head.x)
 		}
 
 	case ActionInsertChar:
 		if a.r >= 32 && a.r <= 126 {
-			inject_at(&editor.cmd_box.buff, editor.cmd_box.cursor.head.x, u8(a.r))
-			editor.cmd_box.cursor.head.x += 1
+			inject_at(&editor.popup_box.buff, editor.popup_box.cursor.head.x, u8(a.r))
+			editor.popup_box.cursor.head.x += 1
 		}
 	case:
 	}
@@ -285,40 +464,7 @@ dispatch_explorer_action :: proc(action: Action) {
 	}
 }
 
-dispatch_editor_action :: proc(action: Action) {
-	#partial switch a in action {
-	case ActionMove:
-		#partial switch a.dir {
-		case .UP:        move_cursor_up(shift_held = false)
-		case .DOWN:      move_cursor_down(shift_held = false)
-		case .LEFT:      move_cursor_left(shift_held = false)
-		case .RIGHT:     move_cursor_right(shift_held = false)
-		case .HOME:      move_cursor_home(shift_held = false)
-		case .END:       move_cursor_end(shift_held = false)
-		case .PAGE_UP, .PAGE_DOWN:
-		}
-
-	case ActionSelect:
-		#partial switch a.dir {
-		case .UP:        move_cursor_up(shift_held = true)
-		case .DOWN:      move_cursor_down(shift_held = true)
-		case .LEFT:      move_cursor_left(shift_held = true)
-		case .RIGHT:     move_cursor_right(shift_held = true)
-		case .HOME:      move_cursor_home(shift_held = true)
-		case .END:       move_cursor_end(shift_held = true)
-		case .PAGE_UP, .PAGE_DOWN:
-		}
-
-	case ActionEnter:      insert_newline()
-	case ActionDelete:     delete_char()
-	case ActionBackspace:  backspace_char()
-	case ActionEscape:     reset_to_single_cursor()
-	case ActionInsertChar: if a.r >= 32 && a.r <= 126 do insert_char(a.r)
-	case:
-	}
-}
-
-// --- Terminal Input Reader ---
+// Terminal Input Reader
 
 read_key :: proc() -> (Key_Event, bool) {
 	buf: [8]byte
@@ -416,7 +562,7 @@ parse_mod :: proc(b: byte) -> Key_Modifiers {
 	case '4': return {.ALT, .SHIFT}
 	case '5': return {.CTRL}
 	case '6': return {.CTRL, .SHIFT}
-	case '7': return {.ALT, .SHIFT}
+	case '7': return {.CTRL, .ALT}
 	case '8': return {.CTRL, .ALT, .SHIFT}
 	case:
 	}
