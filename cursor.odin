@@ -115,46 +115,63 @@ scroll_cursor_into_view :: proc() {
 }
 
 move_cursor_left :: proc(shift_held: bool = false) {
+    flush_undo_group()
     ensure_primary_cursor()
     
     for &c in editor.cursor {
-        if c.head.x > 0 {
-            c.head.x -= 1
-        } else if c.head.y > 0 {
-            c.head.y -= 1
-            prev_line := editor.lines[c.head.y][:]
-            c.head.x = get_line_visual_len(prev_line)
-        }
+        start, _, active := get_selection_range(c)
 
-        if !shift_held {
-            c.anchor = c.head
+        if !shift_held && active {
+            c.head = start
+            c.anchor = start
+        } else {
+            if c.head.x > 0 {
+                c.head.x -= 1
+            } else if c.head.y > 0 {
+                c.head.y -= 1
+                prev_line := editor.lines[c.head.y][:]
+                c.head.x = get_line_visual_len(prev_line)
+            }
+
+            if !shift_held {
+                c.anchor = c.head
+            }
         }
     }
     scroll_cursor_into_view()
 }
 
-move_cursor_right :: proc(shift_held: bool) {
+move_cursor_right :: proc(shift_held: bool = false) {
+    flush_undo_group()
     ensure_primary_cursor()
 
     for &c in editor.cursor {
-        line := editor.lines[c.head.y][:]
-        vis_len := get_line_visual_len(line)
+        _, end, active := get_selection_range(c)
 
-        if c.head.x < vis_len {
-            c.head.x += 1
-        } else if c.head.y < len(editor.lines) - 1 {
-            c.head.y += 1
-            c.head.x = 0
-        }
+        if !shift_held && active {
+            c.head = end
+            c.anchor = end
+        } else {
+            line := editor.lines[c.head.y][:]
+            vis_len := get_line_visual_len(line)
 
-        if !shift_held {
-            c.anchor = c.head
+            if c.head.x < vis_len {
+                c.head.x += 1
+            } else if c.head.y < len(editor.lines) - 1 {
+                c.head.y += 1
+                c.head.x = 0
+            }
+
+            if !shift_held {
+                c.anchor = c.head
+            }
         }
     }
     scroll_cursor_into_view()
 }
 
 move_cursor_up :: proc(shift_held: bool) {
+    flush_undo_group()
     ensure_primary_cursor()
 
     for &c in editor.cursor {
@@ -172,6 +189,7 @@ move_cursor_up :: proc(shift_held: bool) {
 }
 
 move_cursor_down :: proc(shift_held: bool) {
+    flush_undo_group()
     ensure_primary_cursor()
 
     for &c in editor.cursor {
@@ -189,6 +207,7 @@ move_cursor_down :: proc(shift_held: bool) {
 }
 
 move_cursor_home :: proc(shift_held: bool) {
+    flush_undo_group()
     ensure_primary_cursor()
 
     for &c in editor.cursor {
@@ -201,6 +220,7 @@ move_cursor_home :: proc(shift_held: bool) {
 }
 
 move_cursor_end :: proc(shift_held: bool) {
+    flush_undo_group()
     ensure_primary_cursor()
 
     for &c in editor.cursor {
@@ -214,6 +234,7 @@ move_cursor_end :: proc(shift_held: bool) {
 }
 
 move_line_up :: proc() {
+    flush_undo_group()
     for &c in editor.cursor {
         if c.anchor.y == 0 do continue 
         swap := editor.lines[c.anchor.y]
@@ -301,7 +322,11 @@ expand_word_from_cursor_pos :: proc(c: ^Cursor) {
 
     x := clamp(c.head.x, 0, len(line) - 1)
 
-    if !is_word_char(line[x - 1]) do return
+    if x > 0 {
+        if !is_word_char(line[x - 1]) do return
+    } else {
+        if !is_word_char(line[x]) do return
+    }
 
     start_x := x
     for start_x > 0 && is_word_char(line[start_x - 1]) {
@@ -376,4 +401,40 @@ select_next_match :: proc() {
     new_cursor.head   = { x = found_x + len(target), y = found_y }
 
     append(&editor.cursor, new_cursor)
+}
+
+select_all_matches :: proc() {
+    ensure_primary_cursor()
+    primary := &editor.cursor[0]
+
+    if primary.anchor == primary.head {
+        expand_word_from_cursor_pos(primary)
+    }
+
+    line := editor.lines[primary.head.y][:]
+    sel_start := min(primary.anchor.x, primary.head.x)
+    sel_end   := max(primary.anchor.x, primary.head.x)
+
+    if sel_start < 0 || sel_end > len(line) do return
+    target := line[sel_start:sel_end]
+    target_len := len(target)
+    if target_len == 0 do return
+
+    clear(&editor.cursor)
+
+    for line_bytes, y in editor.lines {
+        search_x := 0
+        for search_x <= len(line_bytes) - target_len {
+            idx := bytes.index(line_bytes[search_x:], target)
+            if idx == -1 do break
+
+            found_x := search_x + idx
+            append(&editor.cursor, Cursor{
+                anchor = Position{x = found_x,              y = y},
+                head   = Position{x = found_x + target_len, y = y},
+            })
+
+            search_x = found_x + target_len
+        }
+    }
 }

@@ -149,3 +149,35 @@ find_matching_file :: proc(e: ^Explorer, c: u8) {
         }
     }
 }
+
+dispatch_explorer_action :: proc(action: Action) {
+	#partial switch a in action {
+	case ActionMove:
+		if len(editor.explorer.entries) == 0 do return
+		#partial switch a.dir {
+		case .UP:
+			editor.explorer.selected = clamp(editor.explorer.selected - 1, 0, len(editor.explorer.entries) - 1)
+		case .DOWN:
+			editor.explorer.selected = clamp(editor.explorer.selected + 1, 0, len(editor.explorer.entries) - 1)
+		}
+
+	case ActionEnter:
+		sel := editor.explorer.selected
+		if sel >= 0 && sel < len(editor.explorer.entries) {
+			entry := editor.explorer.entries[sel]
+			if !entry.is_dir {
+				editor.filepath = entry.fullpath
+				editor_open_file(entry.fullpath)
+				editor.active_panel = .Editor
+			} else {
+				explorer_toggle_expand(&editor.explorer, sel)
+			}
+		}
+
+	case ActionInsertChar:
+		if a.r >= 32 && a.r <= 126 {
+			find_matching_file(&editor.explorer, u8(a.r))
+		}
+	case:
+	}
+}

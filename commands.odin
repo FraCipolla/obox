@@ -229,3 +229,45 @@ execute_command :: proc(cmd: string) {
         total_replacements, scope.start_line + 1, scope.end_line + 1, target, replacement,
     )
 }
+
+dispatch_command_popup_action :: proc(action: Action) {
+	#partial switch a in action {
+	case ActionMove:
+		#partial switch a.dir {
+		case .LEFT:  editor.popup_box.cursor.head.x -= 1
+		case .RIGHT: editor.popup_box.cursor.head.x += 1
+		case .HOME:  editor.popup_box.cursor.head.x = 0
+		case .END:   editor.popup_box.cursor.head.x = len(editor.popup_box.buff)
+		}
+		clamp_popup_cursor()
+
+	case ActionEscape:
+		editor.active_panel = .Editor
+		clear(&editor.popup_box.buff)
+		editor.popup_box.cursor.head.x = 0
+
+	case ActionEnter:
+		execute_command(string(editor.popup_box.buff[:]))
+		editor.active_panel = .Editor
+		clear(&editor.popup_box.buff)
+		editor.popup_box.cursor.head.x = 0
+
+	case ActionDelete:
+		if editor.popup_box.cursor.head.x < len(editor.popup_box.buff) {
+			ordered_remove(&editor.popup_box.buff, editor.popup_box.cursor.head.x)
+		}
+
+	case ActionBackspace:
+		if editor.popup_box.cursor.head.x > 0 {
+			editor.popup_box.cursor.head.x -= 1
+			ordered_remove(&editor.popup_box.buff, editor.popup_box.cursor.head.x)
+		}
+
+	case ActionInsertChar:
+		if a.r >= 32 && a.r <= 126 {
+			inject_at(&editor.popup_box.buff, editor.popup_box.cursor.head.x, u8(a.r))
+			editor.popup_box.cursor.head.x += 1
+		}
+	case:
+	}
+}

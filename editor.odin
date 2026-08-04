@@ -3,6 +3,9 @@ package main
 import "core:bytes"
 import "core:os"
 import "core:unicode/utf8"
+import "core:encoding/base64"
+import "core:strings"
+import "core:slice"
 
 Panel :: enum {
 	Editor,
@@ -35,6 +38,8 @@ Editor :: struct {
 	popup_box:        PopupBox,
 
 	explorer:       Explorer,
+
+    undo_mgr: Undo_Manager,
 }
 
 editor: Editor
@@ -54,6 +59,7 @@ init_editor :: proc() {
 	editor.popup_box.buff = make([dynamic]u8)
 	editor.explorer_width = 24
 	editor.show_explorer = true
+    init_undo_manager(&editor.undo_mgr)
 }
 
 destroy_editor :: proc() {
@@ -63,6 +69,7 @@ destroy_editor :: proc() {
 	delete(editor.lines)
 	delete(editor.popup_box.buff)
     delete(editor.keymap.bindings)
+    destroy_undo_manager(&editor.undo_mgr)
 }
 
 clamp_popup_cursor :: proc() {
@@ -94,12 +101,12 @@ editor_open_file :: proc(filename: string) -> bool {
 		append(&editor.lines, make([dynamic]u8))
 	}
 
+    clear_undo_manager(&editor.undo_mgr)
 	return true
 }
 
-import "core:slice"
-
 delete_selection :: proc() {
+    begin_edit()
     if len(editor.cursor) == 0 do return
 
     cursor_indices := make([dynamic]int, 0, len(editor.cursor))
@@ -179,6 +186,7 @@ has_any_selection :: proc() -> bool {
 }
 
 insert_char :: proc(ch: rune) {
+    begin_edit()
     if len(editor.lines) == 0 {
         append(&editor.lines, make([dynamic]u8))
     }
@@ -231,6 +239,7 @@ insert_char :: proc(ch: rune) {
 }
 
 insert_newline :: proc() {
+    begin_edit()
 	if len(editor.lines) == 0 {
 		append(&editor.lines, make([dynamic]u8))
 	}
@@ -287,6 +296,7 @@ get_line_visual_width :: proc(line: []u8) -> int {
 }
 
 backspace_char :: proc() {
+    begin_edit()
     if len(editor.lines) == 0 do return
     clamp_cursor()
 
@@ -365,6 +375,7 @@ backspace_char :: proc() {
 }
 
 delete_char :: proc() {
+    begin_edit()
     if len(editor.lines) == 0 do return
     clamp_cursor()
 
@@ -417,3 +428,4 @@ scroll_explorer_viewport :: proc(visible_height: int) {
 		editor.explorer.scroll_offset = editor.explorer.selected - int(visible_height) + 1
 	}
 }
+

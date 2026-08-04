@@ -21,6 +21,8 @@ main :: proc() {
 	defer disable_raw_mode()
 	init_editor()
 	defer destroy_editor()
+	enable_extended_keyboard()
+	defer disable_extended_keyboard()
 	editor_open_file(editor.filepath)
 
 	fmt.print(ansi.CSI + ansi.DECASB_ENTER)
